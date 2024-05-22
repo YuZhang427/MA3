@@ -107,22 +107,22 @@ class MA3N(torch.nn.Module):
                                                  (edge_index[:, 0], adjusted_item_ids)),  
                                                 shape=(self.num_user, self.num_item), dtype=np.float32)
 
-        # 初始化用户和项目的嵌入层，使用Xavier方法初始化权重
+
         self.user_embedding = nn.Embedding(self.num_user, self.dim_E)
         self.item_embedding = nn.Embedding(self.num_item, self.dim_E)
         nn.init.xavier_uniform_(self.user_embedding.weight)
         nn.init.xavier_uniform_(self.item_embedding.weight)
 
-        # 获取归一化的邻接矩阵
+
         self.norm_adj = self.get_adj_mat()
-        # 将R（用户-项目的归一化邻接矩阵）转换为PyTorch的稀疏张量
+    
         self.R = self.sparse_mx_to_torch_sparse_tensor(self.R).float().to(self.device)
-        # 将归一化的邻接矩阵转换为PyTorch的稀疏张量
+
         self.norm_adj = self.sparse_mx_to_torch_sparse_tensor(self.norm_adj).float().to(self.device)
 
-        # 加载多模态特征和创建邻接矩阵
+     
         self.image_embedding = nn.Embedding.from_pretrained(v_feat, freeze=False)
-        # 动态构建图像邻接矩阵
+      
         image_adj = build_sim(self.image_embedding.weight.detach())
         image_adj = build_knn_normalized_graph(image_adj, topk=self.knn_k, is_sparse=self.sparse,
                                                norm_type='sym')
@@ -133,21 +133,20 @@ class MA3N(torch.nn.Module):
         text_adj = build_knn_normalized_graph(text_adj, topk=self.knn_k, is_sparse=self.sparse, norm_type='sym')
         self.text_original_adj = text_adj.to(self.device)
 
-        # 转换矩阵
+      
         self.image_trs = nn.Linear(v_feat.shape[1], self.dim_E)
         self.text_trs = nn.Linear(t_feat.shape[1], self.dim_E)
 
         self.softmax = nn.Softmax(dim=-1)
 
-        # 定义一个查询共通特征的序列模型
-        # 定义一个查询共通特征的序列模型
+  
         self.query_common = nn.Sequential(
             nn.Linear(self.dim_E // self.n_factors, self.dim_E // self.n_factors),
             nn.Tanh(),
             nn.Linear(self.dim_E // self.n_factors, 1, bias=False)
         )
 
-        # 定义门控单元，用于控制视觉特征和文本特征在最终嵌入中的贡献
+   
         self.gate_v = nn.Sequential(
             nn.Linear(self.dim_E, self.dim_E),
             nn.Sigmoid()
@@ -169,22 +168,22 @@ class MA3N(torch.nn.Module):
         )
 
     def get_adj_mat(self):
-        # 创建一个空的邻接矩阵,使用DOK（Dictionary Of Keys）格式
+  
         adj_mat = sp.dok_matrix((self.num_user + self.num_item, self.num_user + self.num_item), dtype=np.float32)
         adj_mat = adj_mat.tolil()
-        # 将用户-项目的交互矩阵也转换为LIL格式
+       
         R = self.interaction_matrix.tolil()
 
-        # 在邻接矩阵的左上角和右下角填充用户对项目的交互信息和其转置，构建无向图
+     
         adj_mat[:self.num_user, self.num_user:] = R
         adj_mat[self.num_user:, :self.num_user] = R.T
-        # 再次将LIL格式的邻接矩阵转换回DOK格式
+      
         adj_mat = adj_mat.todok()
 
-        # 归一化邻接矩阵
+      
         def normalized_adj_single(adj):
             rowsum = np.array(adj.sum(1))
-            # 用非常小的正数替换零值，避免除以零
+            
             rowsum[rowsum == 0.] = 1e-16
             d_inv = np.power(rowsum, -0.5).flatten()
             d_inv[np.isinf(d_inv)] = 0.
@@ -195,39 +194,38 @@ class MA3N(torch.nn.Module):
 
             return norm_adj.tocoo()
 
-        # 调用上述函数归一化邻接矩阵
+        
         norm_adj_mat = normalized_adj_single(adj_mat)
         norm_adj_mat = norm_adj_mat.tolil()
         self.R = norm_adj_mat[:self.num_user, self.num_user:]
-        # 返回归一化的邻接矩阵，转换为CSR格式
+        
         return norm_adj_mat.tocsr()
 
     def sparse_mx_to_torch_sparse_tensor(self, sparse_mx):
-        # 将SciPy稀疏矩阵转换为COO格式，并确保数据类型为float32
+       
         sparse_mx = sparse_mx.tocoo().astype(np.float32)
 
-        # 从稀疏矩阵中提取行索引和列索引，并将它们堆叠成一个2D数组，
-        # 这个数组的shape为[2, 非零元素个数]，之后将数据类型转换为int64
+        
         indices = torch.from_numpy(np.vstack((sparse_mx.row, sparse_mx.col)).astype(np.int64))
 
-        # 从稀疏矩阵中提取非零元素的值
+
         values = torch.from_numpy(sparse_mx.data)
 
-        # 获取稀疏矩阵的形状，并转换为torch.Size对象
+   
         shape = torch.Size(sparse_mx.shape)
 
-        # 使用提取的索引、值和形状信息构建一个PyTorch的稀疏张量（FloatTensor）
+
         return torch.sparse_coo_tensor(indices, values, shape)
 
     def forward(self):
         image_feats = self.image_trs(self.image_embedding.weight)
         text_feats = self.text_trs(self.text_embedding.weight)
 
-        # Behavior-Guided Purifier: 通过门控机制调整项目嵌入，使其包含视觉或文本信息
+        # User-Guided Purifier
         image_item_embeds = torch.multiply(self.item_embedding.weight, self.gate_v(image_feats))
         text_item_embeds = torch.multiply(self.item_embedding.weight, self.gate_t(text_feats))
 
-        # User-Item View: 合并用户和项目嵌入，并通过图卷积网络处理用户-项目交互
+        # User-Item View
         item_embeds = self.item_embedding.weight
         user_embeds = self.user_embedding.weight
         ego_embeddings = torch.cat([user_embeds, item_embeds], dim=0)
@@ -244,7 +242,7 @@ class MA3N(torch.nn.Module):
 
         user_embeds, item_embeds = torch.split(content_embeds, [self.num_user, self.num_item], dim=0)
 
-        # Item-Item View: 分别对视觉和文本特征进行图卷积处理，以模拟项目之间的相似性
+        # Item-Item View
         # if self.sparse:
         #     for i in range(self.n_layers):
         #         image_item_embeds = torch.sparse.mm(self.image_original_adj, image_item_embeds)
@@ -263,13 +261,13 @@ class MA3N(torch.nn.Module):
         # print("image_embeds:", image_embeds.size())
         # print("text_embeds:", text_embeds.size())
 
-        # Disentangled Representation: 解耦表示
+        # Disentangled Representation
         user = torch.chunk(user_embeds, self.n_factors, dim=1)
         item = torch.chunk(item_embeds, self.n_factors, dim=1)
         text = torch.chunk(image_embeds, self.n_factors, dim=1)
         image = torch.chunk(text_embeds, self.n_factors, dim=1)
 
-        # Behavior-Aware Fuser: 使用注意力机制融合视觉和文本特征
+        # User-Aware Fuser
         sqrt_d = torch.sqrt(torch.tensor(self.dim_E // self.n_factors))
         all_embeds_list = []
         for i in range(0, self.n_factors):
@@ -281,14 +279,13 @@ class MA3N(torch.nn.Module):
             sep_image_embeds = image[i] - common_embeds
             sep_text_embeds = text[i] - common_embeds
 
-            # 使用门控机制调整个性化嵌入
             image_prefer = self.gate_image_prefer(users_items)
             text_prefer = self.gate_text_prefer(users_items)
             sep_image_embeds = torch.multiply(image_prefer, sep_image_embeds)
             sep_text_embeds = torch.multiply(text_prefer, sep_text_embeds)
             side_embeds = (sep_image_embeds + sep_text_embeds + common_embeds) / 3
 
-            # 综合内容嵌入和个性化嵌入
+  
             all_embeds_i = users_items[i] + side_embeds
 
             all_embeds_list.append(all_embeds_i)
@@ -298,18 +295,18 @@ class MA3N(torch.nn.Module):
         # print('all:',all_embeds.size())
         # print('side:',side_embeds.size())
         self.result = all_embeds
-        # 将嵌入分为用户嵌入和项目嵌入
+
         all_embeddings_users, all_embeddings_items = torch.split(all_embeds, [self.num_user, self.num_item], dim=0)
 
         return all_embeddings_users, all_embeddings_items, user, item, text, image
 
     def bpr_loss(self, users, pos_items, neg_items, u_g, i_g):
-        # 获取用户、正向和负向项目的嵌入
+      
         user_embeddings = u_g[users]
         pos_item_embeddings = i_g[pos_items]
         neg_item_embeddings = i_g[neg_items]
 
-        # 计算正向和负向项目的分数
+     
         pos_scores = torch.sum(user_embeddings * pos_item_embeddings, dim=1)
         neg_scores = torch.sum(user_embeddings * neg_item_embeddings, dim=1)
 
@@ -319,7 +316,7 @@ class MA3N(torch.nn.Module):
         return loss
 
     def regularization_loss(self, users, pos_items, neg_items, u_g, i_g):
-        # 计算正则化损失
+      
         user_embeddings = u_g[users]
         pos_item_embeddings = i_g[pos_items]
         neg_item_embeddings = i_g[neg_items]
@@ -430,28 +427,27 @@ class MA3N(torch.nn.Module):
         return total_loss
 
     def gene_ranklist(self, topk=50):
-        # step需要小于用户数量才能达到分批的效果不然会报错
-        # 用户嵌入和项目嵌入
+      
         user_tensor = self.result[:self.num_user].cpu()
         item_tensor = self.result[self.num_user:self.num_user + self.num_item].cpu()
 
-        # 不同阶段的评估（例如训练、验证和测试）
+      
         all_index_of_rank_list = torch.LongTensor([])
 
-        # 生成评分矩阵
+      
         score_matrix = torch.matmul(user_tensor, item_tensor.t())
 
-        # 将历史交互设置为极小值
+      
         for row, col in self.user_item_dict.items():
             col = torch.LongTensor(list(col)) - self.num_user
             score_matrix[row][col] = 1e-6
 
-        # 选出每个用户的 top-k 个物品
+        
         _, index_of_rank_list_train = torch.topk(score_matrix, topk)
-        # 总的top-k列表
+        
         all_index_of_rank_list = torch.cat(
             (all_index_of_rank_list, index_of_rank_list_train.cpu() + self.num_user),
             dim=0)
 
-        # 返回三个推荐列表
+      
         return all_index_of_rank_list
