@@ -1,7 +1,7 @@
 """
 -*- coding: utf-8 -*-
 
-@Author : liyihao
+
 @Time : 2024/3/9 21:50
 @File : MA3N.py
 @function :
@@ -95,16 +95,16 @@ class MA3N(torch.nn.Module):
         self.reg_weight = reg_weight
         self.aggr_mode = aggr_mode
 
-        # 指示是否使用稀疏矩阵表示
+       
         self.sparse = True
 
-        # 最近邻算法的k值
+        
         self.knn_k = 10
 
         adjusted_item_ids = edge_index[:, 1] - self.num_user
-        # 创建COO格式的稀疏矩阵
-        self.interaction_matrix = sp.coo_matrix((np.ones(len(edge_index)),  # 填充1表示存在交互
-                                                 (edge_index[:, 0], adjusted_item_ids)),  # 用户ID和调整后的项目ID
+      
+        self.interaction_matrix = sp.coo_matrix((np.ones(len(edge_index)),  
+                                                 (edge_index[:, 0], adjusted_item_ids)),  
                                                 shape=(self.num_user, self.num_item), dtype=np.float32)
 
         # 初始化用户和项目的嵌入层，使用Xavier方法初始化权重
